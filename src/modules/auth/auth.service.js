@@ -1,0 +1,111 @@
+
+const jwt = require('jsonwebtoken');
+const pool = require('../../config/database');
+const bcrypt = require('bcrypt');
+const sql = require('./auth.sql');
+const mailer = require('../../config/mail');
+
+const generateOtp = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
+
+constgenOtp = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+exports.register = async (email, password, role) => {
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const userRes = await pool.query(sql.createUser, [
+    email,
+    hashedPassword,
+    role
+  ]);
+
+  const otp = generateOtp();
+  const otpHash = await bcrypt.hash(otp, 10);
+  const expires = new Date(Date.now() + 5 * 60 * 1000);
+
+  await pool.query(sql.insertOtp, [email, otpHash, expires]);
+
+  await mailer.sendMail({
+    to: email,
+    subject: 'FAF OTP Verification',
+    html: `<h3>Your OTP: ${otp}</h3>`,
+  });
+
+  return userRes.rows[0];
+};
+
+exports.verifyOtp = async (email, otp) => {
+  const { rows } = await pool.query(sql.findValidOtp, [email]);
+  if (!rows.length) throw new Error('OTP invalid');
+
+  const isMatch = await bcrypt.compare(otp, rows[0].otp_hash);
+  if (!isMatch) throw new Error('OTP wrong');
+
+  await pool.query(sql.verifyUserEmail, [email]);
+  await pool.query(sql.markOtpUsed, [rows[0].id]);
+};
+
+exports.sendOtp = async (email, subject) => {
+  const otp = generateOtp();
+  const otpHash = await bcrypt.hash(otp, 10);
+  const expires = new Date(Date.now() + 5 * 60 * 1000);
+
+  await pool.query(sql.insertOtp, [email, otpHash, expires]);
+  await mailer.sendMail({
+    to: email,
+    subject: 'FAF OTP Verification',
+    html: `<h3>Your OTP: ${otp}</h3>`,
+  });
+};
+
+// =======================
+// LOGIN
+// =======================
+exports.login = async (email, password) => {
+  const { rows } = await pool.query(sql.findUserByEmail, [email]);
+  if (!rows.length) throw new Error('User not found');
+
+  const user = rows[0];
+  if (user.status !== 'ACTIVE') throw new Error('Account not activated');
+
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) throw new Error('Wrong password');
+
+  const token = jwt.sign(
+    { id: user.id, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN }
+  );
+
+  await pool.query(sql.updateLastLogin, [user.id]);
+
+  return token;
+};
+
+// =======================
+// FORGOT PASSWORD
+// =======================
+exports.forgotPassword = async (email) => {
+  const { rows } = await pool.query(sql.findUserByEmail, [email]);
+  if (!rows.length) throw new Error('Email not found');
+
+  await exports.sendOtp(email, 'Reset your FAF password');
+};
+
+// =======================
+// RESET PASSWORD
+// =======================
+exports.resetPassword = async (email, otp, newPassword) => {
+  const { rows } = await pool.query(sql.findValidOtp, [email]);
+  if (!rows.length) throw new Error('OTP invalid');
+
+  const match = await bcrypt.compare(otp, rows[0].otp_hash);
+  if (!match) throw new Error('OTP wrong');
+
+  const hash = await bcrypt.hash(newPassword, 10);
+
+  await pool.query(sql.updatePassword, [email, hash]);
+  await pool.query(sql.markOtpUsed, [rows[0].id]);
+};
