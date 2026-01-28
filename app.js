@@ -8,6 +8,7 @@ const cors = require("cors");
 
 var authRoute = require('./src/modules/auth/auth.route');
 const userRoute = require('./src/modules/users/user.route');
+var jobRoute = require('./src/modules/jobs/job.route');
 
 var app = express();
 
@@ -35,6 +36,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ✅ ROUTES
 app.use('/api/auth', authRoute);
 app.use('/api/users', userRoute);
+app.use('/api/jobs', jobRoute);
 
 // catch 404
 app.use(function(req, res, next) {
