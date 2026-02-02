@@ -2,8 +2,29 @@ const pool = require('../../config/database');
 const sql = require('./user.sql');
 
 exports.getMyProfile = async (userId) => {
-  const { rows } = await pool.query(sql.getProfileByUserId, [userId]);
-  return rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // 1️⃣ đảm bảo profile tồn tại
+    await client.query(sql.createProfile, [userId, null]);
+
+    // 2️⃣ đảm bảo wallet tồn tại
+    await client.query(sql.createWalletIfNotExist, [userId]);
+
+    // 3️⃣ lấy full data
+    const { rows } = await client.query(
+      sql.getProfileWithWallet,
+      [userId]
+    );
+
+    await client.query('COMMIT');
+    return rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 };
 
 exports.createProfileIfNotExist = async (userId, fullName) => {

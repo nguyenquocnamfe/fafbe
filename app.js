@@ -9,6 +9,10 @@ const cors = require("cors");
 var authRoute = require('./src/modules/auth/auth.route');
 const userRoute = require('./src/modules/users/user.route');
 var jobRoute = require('./src/modules/jobs/job.route');
+var categoryRoute = require('./src/modules/category/cate.route');
+var skillRoute = require('./src/modules/skills/skill.route');
+var userSkillRoute = require('./src/modules/userSkills/userSkill.route');
+var jobSkillRoute = require('./src/modules/jobSkills/jobSkill.route');
 
 var app = express();
 
@@ -37,6 +41,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api/auth', authRoute);
 app.use('/api/users', userRoute);
 app.use('/api/jobs', jobRoute);
+app.use('/api/categories', categoryRoute);
+app.use('/api/skills', skillRoute);
+app.use('/api/user-skills', userSkillRoute);
+app.use('/api/job-skills', jobSkillRoute);
 
 // catch 404
 app.use(function(req, res, next) {

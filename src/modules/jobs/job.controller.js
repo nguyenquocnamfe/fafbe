@@ -1,33 +1,41 @@
-const {
-  createJobWithContractAndCheckpoints,
-} = require('./job.service');
+const { createJobWithContractAndCheckpoints, getJobById,
+  listJobs,
+  updateJob,
+  deleteJob, } = require("./job.service");
+const { getCategoryById } = require("../category/cate.service");
 
 const PLATFORM_FEE_PERCENT = 3; // 3%
 
-const ALLOWED_JOB_TYPES = ['SHORT_TERM', 'LONG_TERM'];
+const ALLOWED_JOB_TYPES = ["SHORT_TERM", "LONG_TERM"];
 
 function validateCreateJobPayload(body) {
   const errors = [];
 
-  const { title, description, jobType, budget, checkpoints } = body;
+  const { title, description, jobType, budget, checkpoints, categoryId } = body;
+
+  console.log(checkpoints)
 
   if (!title) {
-    errors.push('title is required');
+    errors.push("title is required");
+  }
+
+  if (!categoryId || !Number.isInteger(Number(categoryId))) {
+    errors.push("categoryId is required and must be a number");
   }
 
   if (!jobType) {
-    errors.push('jobType is required');
+    errors.push("jobType is required");
   } else if (!ALLOWED_JOB_TYPES.includes(jobType)) {
-    errors.push(`jobType must be one of: ${ALLOWED_JOB_TYPES.join(', ')}`);
+    errors.push(`jobType must be one of: ${ALLOWED_JOB_TYPES.join(", ")}`);
   }
 
   const budgetNum = Number(budget);
   if (!Number.isFinite(budgetNum) || budgetNum <= 0) {
-    errors.push('budget must be a positive number');
+    errors.push("budget must be a positive number");
   }
 
   if (!Array.isArray(checkpoints) || checkpoints.length === 0) {
-    errors.push('at least one checkpoint is required');
+    errors.push("at least one checkpoint is required");
   } else {
     let sum = 0;
 
@@ -58,11 +66,11 @@ function validateCreateJobPayload(body) {
 }
 
 const BASE_CONTRACT_TEMPLATE = {
-  title: 'FAF Standard Service Contract',
+  title: "FAF Standard Service Contract",
   defaultClauses: [
-    'Thanh toán theo từng checkpoint đã được client duyệt.',
-    'Client phải nạp đủ total_amount vào escrow trước khi bắt đầu làm.',
-    'Tranh chấp sẽ được giải quyết theo quy trình dispute của FAF.',
+    "Thanh toán theo từng checkpoint đã được client duyệt.",
+    "Client phải nạp đủ total_amount vào escrow trước khi bắt đầu làm.",
+    "Tranh chấp sẽ được giải quyết theo quy trình dispute của FAF.",
   ],
 };
 
@@ -83,37 +91,56 @@ const BASE_CONTRACT_TEMPLATE = {
  */
 async function createJob(req, res) {
   try {
-    const user = req.user; // gán từ JWT middleware
+    const user = req.user;
 
     if (!user) {
-      return res.status(401).json({ message: 'Unauthorized' });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    if (user.role !== 'employer') {
+    if (user.role !== "employer") {
       return res.status(403).json({
-        message: 'Only clients (task owners) can create jobs',
+        message: "Only clients (task owners) can create jobs",
       });
     }
 
-    const { title, description, jobType, budget, checkpoints } = req.body;
+    // ✅ 1. Destructure trước
+    const {
+      title,
+      description,
+      jobType,
+      budget,
+      checkpoints,
+      contractContent,
+      categoryId,
+      skills,
+    } = req.body;
 
+    // ✅ 2. Validate payload
     const { isValid, errors } = validateCreateJobPayload(req.body);
-
     if (!isValid) {
       return res.status(400).json({
-        message: 'Invalid request body',
+        message: "Invalid request body",
         errors,
+      });
+    }
+
+    // ✅ 3. Validate category tồn tại & active
+    const category = await getCategoryById(Number(categoryId));
+    if (!category || !category.is_active) {
+      return res.status(400).json({
+        message: "Invalid or inactive category",
       });
     }
 
     const budgetNum = Number(budget);
 
+    // ✅ 4. Create job + contract + checkpoints
     const {
       job,
       contract,
       checkpoints: createdCheckpoints,
     } = await createJobWithContractAndCheckpoints({
-      clientId: user.id, // payload JWT phải có field id map với users.id
+      clientId: user.id,
       title,
       description,
       jobType,
@@ -122,42 +149,104 @@ async function createJob(req, res) {
         title: cp.title,
         description: cp.description,
         amount: Number(cp.amount),
+        due_date: cp.due_date ? new Date(cp.due_date) : null,
       })),
+      contractContent,
+      categoryId: Number(categoryId),
+      skills,
     });
 
-    // Tính summary cho UI Budget & Checkpoints
     const platformFeeAmount = Math.round(
       (budgetNum * PLATFORM_FEE_PERCENT) / 100,
     );
 
-    const summary = {
-      totalJobBudget: budgetNum,
-      platformFeePercent: PLATFORM_FEE_PERCENT,
-      platformFeeAmount,
-      totalEscrow: budgetNum,
-      clientPays: budgetNum + platformFeeAmount,
-      workerEarns: budgetNum,
-    };
-
     return res.status(201).json({
-      message: 'Job created successfully',
+      message: "Job created successfully",
       data: {
         job,
         contract,
         checkpoints: createdCheckpoints,
-        summary,
-        contractTemplate: {
-          ...BASE_CONTRACT_TEMPLATE,
-          customClauses: [], // FE cho task owner thêm, nhưng không xoá defaultClauses
+        summary: {
+          totalJobBudget: budgetNum,
+          platformFeePercent: PLATFORM_FEE_PERCENT,
+          platformFeeAmount,
+          totalEscrow: budgetNum,
+          clientPays: budgetNum + platformFeeAmount,
+          workerEarns: budgetNum,
         },
       },
     });
   } catch (error) {
-    console.error('Error in createJob controller:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    if (error.message === "NOT_ENOUGH_POINTS") {
+      return res.status(400).json({
+        message: "Not enough points to create job",
+      });
+    }
+
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
   }
+}
+
+
+/* =========================
+   GET /api/jobs/:id
+========================= */
+async function getJob(req, res) {
+  const job = await getJobById(Number(req.params.id));
+
+  if (!job) {
+    return res.status(404).json({ message: 'Job not found' });
+  }
+
+  return res.json({ data: job });
+}
+
+/* =========================
+   GET /api/jobs
+========================= */
+async function getListJobs(req, res) {
+  const jobs = await listJobs({
+    status: req.query.status,
+    categoryId: req.query.categoryId,
+    clientId: req.query.clientId,
+  });
+
+  return res.json({ data: jobs });
+}
+
+
+/* =========================
+   PUT /api/jobs/:id
+========================= */
+async function updateJobHandler(req, res) {
+  const jobId = Number(req.params.id);
+
+  const job = await updateJob(jobId, req.body);
+
+  return res.json({
+    message: 'Job updated successfully',
+    data: job,
+  });
+}
+
+/* =========================
+   DELETE /api/jobs/:id
+========================= */
+async function deleteJobHandler(req, res) {
+  const success = await deleteJob(Number(req.params.id));
+
+  if (!success) {
+    return res.status(404).json({ message: 'Job not found' });
+  }
+
+  return res.json({ message: 'Job deleted successfully' });
 }
 
 module.exports = {
   createJob,
+  getJob,
+  getListJobs,
+  updateJobHandler,
+  deleteJobHandler,
 };
