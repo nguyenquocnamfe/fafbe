@@ -38,7 +38,7 @@ exports.login = async (req, res) => {
 
 exports.forgotPassword = async (req, res) => {
   try {
-    await s.forgotPassword(req.body.email);
+    await service.forgotPassword(req.body.email);
     res.json({ message: 'OTP sent to email' });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -47,7 +47,7 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   try {
-    await s.resetPassword(
+    await service.resetPassword(
       req.body.email,
       req.body.otp,
       req.body.newPassword

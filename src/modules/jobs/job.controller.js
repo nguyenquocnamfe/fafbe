@@ -52,10 +52,30 @@ function validateCreateJobPayload(body) {
       sum += amountNum;
     });
 
-    if (Number.isFinite(budgetNum) && sum !== budgetNum) {
-      errors.push(
-        `sum of checkpoint amounts (${sum}) must equal budget (${budgetNum})`,
-      );
+    if (Math.abs(sum - budgetNum) > 0.01) {
+      errors.push(`sum of checkpoints amount (${sum}) must exist budget (${budgetNum})`);
+    }
+  }
+
+  // Validate Dates
+  if (body.startDate) {
+    const start = new Date(body.startDate);
+    if (isNaN(start.getTime())) {
+      errors.push("startDate is invalid");
+    }
+  }
+
+  if (body.endDate) {
+    const end = new Date(body.endDate);
+    if (isNaN(end.getTime())) {
+      errors.push("endDate is invalid");
+    }
+
+    if (body.startDate) {
+        const start = new Date(body.startDate);
+        if (end <= start) {
+            errors.push("endDate must be after startDate");
+        }
     }
   }
 
@@ -113,6 +133,8 @@ async function createJob(req, res) {
       contractContent,
       categoryId,
       skills,
+      startDate,
+      endDate,
     } = req.body;
 
     // ✅ 2. Validate payload
@@ -145,6 +167,8 @@ async function createJob(req, res) {
       description,
       jobType,
       budget: budgetNum,
+      startDate: startDate ? new Date(startDate) : null,
+      endDate: endDate ? new Date(endDate) : null,
       checkpoints: checkpoints.map((cp) => ({
         title: cp.title,
         description: cp.description,
@@ -154,11 +178,34 @@ async function createJob(req, res) {
       contractContent,
       categoryId: Number(categoryId),
       skills,
+      deadline: req.body.deadline,
     });
 
     const platformFeeAmount = Math.round(
       (budgetNum * PLATFORM_FEE_PERCENT) / 100,
     );
+
+    // Notify Admins
+    try {
+        const adminService = require('../admin/admin.service');
+        const adminIds = await adminService.getAdminIds();
+        
+        const notificationService = require('../notifications/notification.service');
+        const io = req.app.get('io');
+
+        for (const adminId of adminIds) {
+            await notificationService.createNotification({
+                userId: adminId,
+                type: 'JOB_APPROVAL_REQUEST',
+                title: 'New Job Pending Approval',
+                message: `New job "${job.title}" requires approval.`,
+                data: { jobId: job.id },
+                io
+            });
+        }
+    } catch (notifyErr) {
+        console.error("Failed to notify admins:", notifyErr);
+    }
 
     return res.status(201).json({
       message: "Job created successfully",
@@ -184,7 +231,7 @@ async function createJob(req, res) {
     }
 
     console.error(error);
-    return res.status(500).json({ message: "Internal server error" });
+    return res.status(500).json({ message: "Internal server error", error: error.message });
   }
 }
 
@@ -234,13 +281,18 @@ async function updateJobHandler(req, res) {
    DELETE /api/jobs/:id
 ========================= */
 async function deleteJobHandler(req, res) {
-  const success = await deleteJob(Number(req.params.id));
+  try {
+    const success = await deleteJob(Number(req.params.id));
 
-  if (!success) {
-    return res.status(404).json({ message: 'Job not found' });
+    if (!success) {
+      return res.status(404).json({ message: 'Job not found' });
+    }
+
+    return res.json({ message: 'Job deleted successfully' });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
   }
-
-  return res.json({ message: 'Job deleted successfully' });
 }
 
 module.exports = {

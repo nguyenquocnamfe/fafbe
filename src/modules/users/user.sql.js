@@ -5,7 +5,7 @@ module.exports = {
            p.skills, p.education, p.experience,
            p.portfolio, p.social_links,
            p.location, p.hourly_rate, p.availability,
-           p.rating_avg, p.total_jobs_done
+           p.rating_avg, p.total_jobs_done, p.created_at, p.updated_at
     FROM users u
     LEFT JOIN user_profiles p ON p.user_id = u.id
     WHERE u.id = $1
@@ -24,17 +24,35 @@ module.exports = {
   `,
 
   getProfileWithWallet: `
-    SELECT u.id, u.email, u.role, u.status,
-           p.full_name, p.avatar_url, p.bio,
-           p.skills, p.education, p.experience,
-           p.portfolio, p.social_links,
-           p.location, p.hourly_rate, p.availability,
-           p.rating_avg, p.total_jobs_done,
-           w.balance_points, w.locked_points
-    FROM users u
-    LEFT JOIN user_profiles p ON p.user_id = u.id
-    LEFT JOIN wallets w ON w.user_id = u.id
-    WHERE u.id = $1
+    SELECT
+  u.id,
+  u.email,
+  u.role,
+  u.status,
+
+  p.full_name,
+  p.avatar_url,
+  p.bio,
+  p.skills,
+  p.education,
+  p.experience,
+  p.portfolio,
+  p.social_links,
+  p.location,
+  p.hourly_rate,
+  p.availability,
+  p.rating_avg,
+  p.total_jobs_done,
+  p.created_at as profile_created_at,
+  p.updated_at,
+
+  w.balance_points,
+  w.locked_points
+FROM users u
+LEFT JOIN user_profiles p ON p.user_id = u.id
+LEFT JOIN wallets w ON w.user_id = u.id
+WHERE u.id = $1
+
   `,
 
   updateProfile: `
@@ -68,5 +86,29 @@ module.exports = {
 
   countUsers: `
     SELECT COUNT(*) FROM users
+  `,
+
+  getFeaturedWorkers: `
+    SELECT u.id, u.email, u.role, u.status,
+           p.full_name, p.avatar_url, p.bio,
+           p.skills, p.location, p.hourly_rate,
+           p.rating_avg, p.total_jobs_done, p.created_at
+    FROM users u
+    JOIN user_profiles p ON p.user_id = u.id
+    WHERE u.role = 'worker' AND u.status = 'active'
+    ORDER BY p.rating_avg DESC NULLS LAST, p.created_at DESC
+    LIMIT $1
+  `,
+
+  getPublicProfile: `
+    SELECT u.id, u.email, u.role, u.status, u.created_at,
+           p.full_name, p.avatar_url, p.bio,
+           p.skills, p.education, p.experience,
+           p.portfolio, p.social_links,
+           p.location, p.hourly_rate, p.availability,
+           p.rating_avg, p.total_jobs_done
+    FROM users u
+    LEFT JOIN user_profiles p ON p.user_id = u.id
+    WHERE u.id = $1
   `,
 };

@@ -17,3 +17,15 @@ exports.listUsers = async (req, res) => {
   const result = await s.listUsers(page, limit);
   res.json(result);
 };
+
+exports.getFeaturedWorkers = async (req, res) => {
+  const limit = Number(req.query.limit || 10);
+  const workers = await s.getFeaturedWorkers(limit);
+  res.json(workers);
+};
+
+exports.getPublicProfile = async (req, res) => {
+  const profile = await s.getPublicProfile(req.params.id);
+  if (!profile) return res.status(404).json({ message: "User not found" });
+  res.json({ data: profile });
+};

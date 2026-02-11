@@ -25,7 +25,7 @@ exports.createCategory = async (req, res) => {
       });
     }
 
-    const category = await cateService.createCategory({
+    const category = await s.createCategory({
       name,
       slug,
       description,

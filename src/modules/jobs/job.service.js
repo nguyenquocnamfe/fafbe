@@ -25,6 +25,9 @@ async function createJobWithContractAndCheckpoints({
   checkpoints,
   contractContent,
   skills,
+  startDate,
+  endDate,
+  deadline,
 }) {
   console.log("👉 skills nhận được:", skills);
   console.log("checkpont", checkpoints);
@@ -59,17 +62,24 @@ async function createJobWithContractAndCheckpoints({
       [budget, wallet.id],
     );
 
+    // 1.5 Moderate job content
+    const moderationService = require('../../services/moderation.service');
+    const moderationText = `${title}\n${description || ''}`;
+    const moderationResult = await moderationService.moderateContent(moderationText);
+    const moderationStatus = moderationService.getModerationStatus(moderationResult.approved);
+
     // 2️⃣ Tạo job
     const { rows: jobRows } = await client.query(
       `
       INSERT INTO jobs (
         client_id, category_id, title, description,
-        job_type, budget, status, created_at
+        job_type, budget, status, moderation_status, moderation_result, created_at,
+        deadline
       )
-      VALUES ($1, $2, $3, $4, $5, $6, 'OPEN', NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7, $8, NOW(), $9)
       RETURNING *
       `,
-      [clientId, categoryId, title, description || null, jobType, budget],
+      [clientId, categoryId, title, description || null, jobType, budget, moderationStatus, JSON.stringify(moderationResult), deadline || null],
     );
 
     const job = jobRows[0];
@@ -77,6 +87,7 @@ async function createJobWithContractAndCheckpoints({
     // 2️⃣.5️⃣ GÁN SKILLS (BẠN ĐANG THIẾU)
     if (Array.isArray(skills)) {
       for (const skillId of skills) {
+        if (!skillId) continue; // Skip null/undefined skills
         await client.query(
           `
           INSERT INTO job_skills (job_id, skill_id, created_at)
@@ -115,7 +126,7 @@ async function createJobWithContractAndCheckpoints({
         VALUES ($1, $2, $3, $4, $5, 'PENDING', NOW())
         RETURNING *
         `,
-        [contract.id, cp.title, cp.description || null, cp.amount, cp.due_date],
+        [contract.id, cp.title, cp.description || null, cp.amount, cp.due_date || null],
       );
       createdCheckpoints.push(rows[0]);
     }
@@ -123,6 +134,7 @@ async function createJobWithContractAndCheckpoints({
     await client.query("COMMIT");
     return { job, contract, checkpoints: createdCheckpoints };
   } catch (e) {
+    console.error("❌ Job Creation Failed:", e);
     await client.query("ROLLBACK");
     throw e;
   } finally {
@@ -130,24 +142,32 @@ async function createJobWithContractAndCheckpoints({
   }
 }
 
-async function listJobs({ page = 1, limit = 10, categoryId }) {
+async function listJobs({ page = 1, limit = 10, categoryId, clientId }) {
   const offset = (page - 1) * limit;
 
   const params = [];
-  let where = "";
+  const conditions = [];
 
   if (categoryId) {
     params.push(categoryId);
-    where = `WHERE j.category_id = $${params.length}`;
+    conditions.push(`j.category_id = $${params.length}`);
   }
+
+  if (clientId) {
+    params.push(clientId);
+    conditions.push(`j.client_id = $${params.length}`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : "";
 
   const { rows } = await pool.query(
     `
     SELECT j.*,
-           c.name AS category_name
+           c.name AS category_name,
+           (SELECT COUNT(*)::int FROM proposals p WHERE p.job_id = j.id) AS proposal_count
     FROM jobs j
     JOIN job_categories c ON c.id = j.category_id
-    ${where}
+    ${whereClause}
     ORDER BY j.created_at DESC
     LIMIT $${params.length + 1}
     OFFSET $${params.length + 2}
@@ -166,6 +186,32 @@ async function getJobById(jobId) {
     `
     SELECT j.*,
            c.name AS category_name,
+           json_build_object(
+             'id', u.id,
+             'email', u.email,
+             'full_name', up.full_name,
+             'role', u.role,
+             'created_at', u.created_at
+           ) AS client,
+           (SELECT json_build_object(
+              'id', ct.id,
+              'total_amount', ct.total_amount,
+              'status', ct.status,
+              'terms', ct.contract_content,
+              'created_at', ct.created_at
+            ) FROM contracts ct WHERE ct.job_id = j.id LIMIT 1) AS contract,
+           (SELECT COALESCE(json_agg(
+              json_build_object(
+                'id', cp.id,
+                'name', cp.title,
+                'description', cp.description,
+                'amount', cp.amount,
+                'status', cp.status,
+                'deadline', cp.due_date
+              ) ORDER BY cp.created_at ASC
+            ), '[]') FROM checkpoints cp 
+            JOIN contracts ct ON cp.contract_id = ct.id 
+            WHERE ct.job_id = j.id) AS checkpoints,
            COALESCE(
              json_agg(
                json_build_object(
@@ -178,16 +224,19 @@ async function getJobById(jobId) {
            ) AS skills
     FROM jobs j
     JOIN job_categories c ON c.id = j.category_id
+    JOIN users u ON u.id = j.client_id
+    LEFT JOIN user_profiles up ON up.user_id = u.id
     LEFT JOIN job_skills js ON js.job_id = j.id
     LEFT JOIN skills s ON s.id = js.skill_id
     WHERE j.id = $1
-    GROUP BY j.id, c.name
+    GROUP BY j.id, c.name, u.id, u.email, u.role, u.created_at, up.full_name
     `,
     [jobId],
   );
 
   return rows[0];
 }
+
 
 /**
  * UPDATE JOB
@@ -212,6 +261,7 @@ async function updateJob(jobId, data) {
   await pool.query(`DELETE FROM job_skills WHERE job_id = $1`, [jobId]);
 
   for (const skillId of skills) {
+    if (!skillId) continue;
     await pool.query(
       `
       INSERT INTO job_skills (job_id, skill_id, created_at)
@@ -228,15 +278,16 @@ async function updateJob(jobId, data) {
  * DELETE JOB (soft delete)
  */
 async function deleteJob(jobId) {
-  await pool.query(
+  const { rowCount } = await pool.query(
     `
     UPDATE jobs
-    SET status = 'DELETED',
+    SET status = 'CANCELLED',
         updated_at = NOW()
     WHERE id = $1
     `,
     [jobId],
   );
+  return rowCount > 0;
 }
 
 module.exports = {
