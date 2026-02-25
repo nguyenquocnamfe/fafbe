@@ -15,7 +15,7 @@ const runRequest = (path, method, body, token) => {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : '';
     const options = {
-      hostname: 'localhost',
+      hostname: '127.0.0.1',
       port: 5000,
       path: path,
       method: method,
@@ -179,7 +179,8 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     // --- WORK SUBMISSION ---
     console.log('\n--- 8. Work Submission (Worker) ---');
     const submitRes = await runRequest(`/api/checkpoints/${checkpointId}/submit`, 'POST', {
-        submissionData: "Here is the finished work."
+        submission_url: "http://finished-work.com",
+        submission_notes: "Here is the finished work."
     }, tokenWorker);
     if (submitRes.statusCode !== 200) throw new Error(`Submission failed: ${submitRes.body}`);
     console.log(`✓ Work submitted`);
@@ -192,8 +193,8 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     // Validate Payment
     const workerWallet = await client.query('SELECT balance_points FROM wallets WHERE user_id = $1', [workerId]);
-    console.log(`   Worker Balance: ${workerWallet.rows[0].balance_points} (Expected: 5000)`);
-    if (workerWallet.rows[0].balance_points != 5000) throw new Error('Payment not received');
+    console.log(`   Worker Balance: ${workerWallet.rows[0].balance_points} (Expected: 4750)`);
+    if (workerWallet.rows[0].balance_points != 4750) throw new Error('Payment not received (expected 4750 after 5% fee)');
 
     // Complete Contract
     await client.query("UPDATE contracts SET status = 'COMPLETED' WHERE id = $1", [contractId]);

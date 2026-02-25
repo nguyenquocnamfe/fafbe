@@ -40,9 +40,15 @@ A comprehensive Node.js/Express backend for a freelance marketplace platform fea
 - **Submission**: Freelancers submit work for specific checkpoints (milestones).
 - **Approval**: Clients review and approve submissions.
 - **Automated Payouts**: Upon checkpoint approval, funds are automatically **released** from the locked escrow to the Freelancer's wallet.
+- **Platform Fee**: A **5% fee** is deducted from the milestone amount during payout to support the platform.
 - **Transaction History**: Detailed logs of all financial movements (`LOCK`, `RELEASE`, `REFUND`, `DEPOSIT`, `WITHDRAW`).
 
-### 6. **Real-time Chat** (`src/modules/chat`)
+### 6. **Worker Reputation & Tiers** (`src/modules/users`)
+- **Worker Tiers**: Freelancers are automatically assigned tiers (**Bronze**, **Silver**, **Gold**, **Diamond**) based on their total earnings and average rating.
+- **Portfolio**: Workers can showcase their best work via a dedicated portfolio section in their profile.
+- **Skill Ranking**: Dynamic skill scores that increase as workers complete jobs in specific categories.
+
+### 7. **Real-time Chat** (`src/modules/chat`)
 - **Instant Messaging**: Real-time communication using **Socket.io**.
 - **Persistent History**: Chat history stored in PostgreSQL.
 - **Scoped Conversations**: Secure one-on-one chat rooms between Client and Worker.
@@ -145,12 +151,13 @@ A comprehensive Node.js/Express backend for a freelance marketplace platform fea
 (Routes are prefixed with `/api`)
 
 - **Auth**: `/auth/register`, `/auth/login`, `/auth/verify-otp`
-- **Users**: `/users/profile`, `/users/skills`
-- **Jobs**: `/jobs` (GET, POST), `/jobs/:id` (PUT, DELETE)
+- **Users**: `/users/me`, `/users/profile/portfolio`
+- **Jobs**: `/jobs` (GET, POST), `/jobs/:id` (PUT, DELETE/REJECT)
 - **Proposals**: `/proposals`, `/proposals/:id/accept`
-- **Contracts**: `/contracts`, `/contracts/:id/sign`, `/contracts/:id/terminate`
+- **Contracts**: `/contracts`, `/contracts/:id/sign`, `/contracts/:id/terminate`, `/contracts/:id/settle-request`
 - **Checkpoints**: `/checkpoints/:id/submit`, `/checkpoints/:id/approve`
-- **Chat**: `/chat/conversations`, `/chat/:id/messages`
+- **Chat**: `/chat/conversations`, `/chat/start`
+- **Notifications**: `/api/notifications`, `/api/notifications/read-all`
 - **Admin**: `/admin/jobs/pending`, `/admin/jobs/:id/approve`
 - **Matching**: `/matching/jobs/recommended`, `/matching/workers/:jobId`
 

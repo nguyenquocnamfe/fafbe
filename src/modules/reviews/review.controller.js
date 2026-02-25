@@ -2,7 +2,7 @@ const s = require("./review.service");
 
 exports.create = async (req, res) => {
     try {
-        const { contractId, rating, comment } = req.body;
+        const { contractId, rating, comment, skillRatings } = req.body;
         const reviewerId = req.user.id;
         
         if (!contractId || !rating) {
@@ -13,7 +13,8 @@ exports.create = async (req, res) => {
             return res.status(400).json({ message: "Rating must be between 1 and 5" });
         }
         
-        const result = await s.createReview({ contractId, reviewerId, rating, comment });
+        const result = await s.createReview({ contractId, reviewerId, rating, comment, skillRatings });
+
         
         if (result.moderation_status === 'REJECTED') {
             return res.status(400).json({ 

@@ -32,5 +32,19 @@ module.exports = {
   checkExisting: `
     SELECT id FROM reviews
     WHERE contract_id = $1 AND reviewer_id = $2
+  `,
+
+  addSkillRating: `
+    INSERT INTO review_skill_ratings (review_id, skill_id, rating)
+    VALUES ($1, $2, $3)
+    RETURNING *
+  `,
+
+  updateUserSkillPoints: `
+    UPDATE user_skills
+    SET skill_points = skill_points + $3
+    WHERE user_id = $1 AND skill_id = $2
+    RETURNING *
   `
 };
+

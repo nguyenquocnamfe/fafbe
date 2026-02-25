@@ -115,13 +115,45 @@ router.post('/:id/sign', auth, controller.sign);
  */
 router.put('/:id/terminate', auth, controller.terminateContract);
 
-// Legacy/Duplicate Checkpoint routes (Consider favoring /api/checkpoints)
-router.put('/checkpoints/:id/submit', auth, controller.submitCheckpoint);
-router.put('/checkpoints/:id/approve', auth, controller.approveCheckpoint);
-router.put('/checkpoints/:id/reject', auth, controller.rejectCheckpoint);
-
-// Settlement
+/**
+ * @swagger
+ * /api/contracts/{id}/settle-request:
+ *   post:
+ *     summary: Worker requests settlement for an active contract
+ *     tags: [Contracts]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Settlement requested
+ */
 router.post('/:id/settle-request', auth, controller.requestSettlement);
+
+/**
+ * @swagger
+ * /api/contracts/{id}/finalize-settlement:
+ *   post:
+ *     summary: Client finalizes settlement
+ *     tags: [Contracts]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Contract settled and closed
+ */
 router.post('/:id/finalize-settlement', auth, controller.finalizeSettlement);
+
 
 module.exports = router;

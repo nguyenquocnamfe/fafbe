@@ -29,3 +29,22 @@ exports.getPublicProfile = async (req, res) => {
   if (!profile) return res.status(404).json({ message: "User not found" });
   res.json({ data: profile });
 };
+
+exports.getPortfolio = async (req, res) => {
+    try {
+        const items = await s.getPortfolio(req.params.userId);
+        res.json(items);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updatePortfolio = async (req, res) => {
+    try {
+        const profile = await s.updatePortfolio(req.user.id, req.body.items);
+        res.json(profile);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+

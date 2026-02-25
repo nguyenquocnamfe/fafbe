@@ -103,4 +103,53 @@ r.get('/:id', auth, c.getPublicProfile);
 // admin only
 r.get('/', auth, role(['ADMIN']), c.listUsers);
 
+/**
+ * @swagger
+ * /api/users/profile/portfolio/{userId}:
+ *   get:
+ *     summary: Get user portfolio
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Portfolio data
+ */
+r.get('/profile/portfolio/:userId', auth, c.getPortfolio);
+
+/**
+ * @swagger
+ * /api/users/profile/portfolio:
+ *   put:
+ *     summary: Update current user portfolio
+ *     tags: [Users]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               portfolio:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     title: { type: string }
+ *                     url: { type: string }
+ *                     description: { type: string }
+ *     responses:
+ *       200:
+ *         description: Portfolio updated
+ */
+r.put('/profile/portfolio', auth, c.updatePortfolio);
+
 module.exports = r;
+

@@ -110,9 +110,40 @@ exports.getFeaturedWorkers = async (limit = 10) => {
   return rows;
 };
 
-exports.getPublicProfile = async (id) => {
-  const { rows } = await pool.query(sql.getPublicProfile, [id]);
-  return rows[0];
+exports.updateUserTier = async (client, userId) => {
+    // 1. Get current stats
+    const { rows } = await client.query('SELECT rating_avg, total_jobs_done FROM user_profiles WHERE user_id = $1', [userId]);
+    if (rows.length === 0) return;
+
+    const { rating_avg, total_jobs_done } = rows[0];
+    const rating = parseFloat(rating_avg) || 0;
+    const jobs = parseInt(total_jobs_done) || 0;
+
+    // 2. Calculate Tier
+    let tier = 'NEWBIE';
+    if (jobs >= 15 && rating >= 4.7) tier = 'EXPERT';
+    else if (jobs >= 5 && rating >= 4.0) tier = 'PRO';
+
+    // 3. Update Tier
+    await client.query('UPDATE user_profiles SET tier = $1, updated_at = NOW() WHERE user_id = $2', [tier, userId]);
+    return tier;
 };
+
+exports.updatePortfolio = async (userId, items) => {
+    // items should be an array of objects: { title, thumbnail, url, description }
+    const { rows } = await pool.query(`
+        UPDATE user_profiles 
+        SET portfolio_items = $1, updated_at = NOW() 
+        WHERE user_id = $2 
+        RETURNING *
+    `, [JSON.stringify(items), userId]);
+    return rows[0];
+};
+
+exports.getPortfolio = async (userId) => {
+    const { rows } = await pool.query('SELECT portfolio_items FROM user_profiles WHERE user_id = $1', [userId]);
+    return rows[0]?.portfolio_items || [];
+};
+
 
 

@@ -8,8 +8,8 @@ module.exports = {
            worker.full_name as worker_name
     FROM contracts c
     JOIN jobs j ON j.id = c.job_id
-    JOIN user_profiles client ON client.user_id = c.client_id
-    JOIN user_profiles worker ON worker.user_id = c.worker_id
+    LEFT JOIN user_profiles client ON client.user_id = c.client_id
+    LEFT JOIN user_profiles worker ON worker.user_id = c.worker_id
     WHERE c.id = $1
   `,
 
@@ -46,7 +46,15 @@ module.exports = {
     JOIN jobs j ON j.id = c.job_id
     LEFT JOIN user_profiles client ON client.user_id = c.client_id
     LEFT JOIN user_profiles worker ON worker.user_id = c.worker_id
-    WHERE c.worker_id = $1 AND c.status = 'ACTIVE'
+    WHERE c.worker_id = $1 
+      AND c.status NOT IN ('COMPLETED', 'CANCELLED')
+    ORDER BY 
+      CASE 
+        WHEN c.status = 'ACTIVE' THEN 0 
+        WHEN c.status = 'DRAFT' THEN 1
+        ELSE 2 
+      END,
+      c.updated_at DESC
     LIMIT 1
   `,
 

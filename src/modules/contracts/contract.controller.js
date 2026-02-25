@@ -1,5 +1,6 @@
 const s = require("./contract.service");
 const notificationService = require('../notifications/notification.service');
+const chatService = require('../chat/chat.service');
 
 exports.updateContent = async (req, res) => {
     try {
@@ -19,6 +20,17 @@ exports.sign = async (req, res) => {
     try {
         const { id } = req.params;
         const result = await s.signContract({ contractId: id, userId: req.user.id });
+        
+        // Send System Message
+        try {
+            const io = req.app.get('io');
+            const conv = await chatService.getOrCreateConversation(result.client_id, result.worker_id);
+            const signerName = req.user.role === 'employer' ? 'Client' : 'Worker';
+            await chatService.sendSystemMessage(conv.id, `✍️ [Hệ thống] ${signerName} đã ký hợp đồng #${id}.`, io);
+        } catch (chatErr) {
+            console.error("Chat error:", chatErr);
+        }
+
         return res.json({ message: "Contract signed", data: result });
     } catch (e) {
         console.error(e);
@@ -137,6 +149,14 @@ exports.approveCheckpoint = async (req, res) => {
             });
         }
 
+        // Send System Message
+        if (contract) {
+            try {
+                const conv = await chatService.getOrCreateConversation(contract.client_id, contract.worker_id);
+                await chatService.sendSystemMessage(conv.id, `✅ [Hệ thống] Giai đoạn "${result.title}" đã được duyệt.`, req.app.get('io'));
+            } catch (chatErr) { console.error(chatErr); }
+        }
+
         return res.json({ message: "Checkpoint approved successfully", data: result });
     } catch (e) {
         console.error(e);
@@ -175,6 +195,14 @@ exports.rejectCheckpoint = async (req, res) => {
                 data: { checkpointId: result.id, contractId: contract.id },
                 io
             });
+        }
+        
+        // Send System Message
+        if (contract) {
+            try {
+                const conv = await chatService.getOrCreateConversation(contract.client_id, contract.worker_id);
+                await chatService.sendSystemMessage(conv.id, `❌ [Hệ thống] Giai đoạn "${result.title}" đã bị từ chối: ${review_notes}`, req.app.get('io'));
+            } catch (chatErr) { console.error(chatErr); }
         }
         
         return res.json({ message: "Checkpoint rejected", data: result });
@@ -235,6 +263,12 @@ exports.terminateContract = async (req, res) => {
                 data: { contractId: id },
                 io
             });
+
+            // Send System Message
+            try {
+                const conv = await chatService.getOrCreateConversation(contract.client_id, contract.worker_id);
+                await chatService.sendSystemMessage(conv.id, `🚫 [Hệ thống] Hợp đồng #${id} đã bị chấm dứt bởi Client.`, io);
+            } catch (chatErr) { console.error(chatErr); }
         }
 
         res.json(result);

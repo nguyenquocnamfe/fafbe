@@ -2,18 +2,22 @@ const pool = require("../../config/database");
 
 /**
  * Calculate skill match score between user skills and job skills
- * @param {Array<number>} userSkills - Array of skill IDs user has
+ * @param {Object} userSkillMap - Map of skill IDs to points { id: points }
  * @param {Array<number>} jobSkills - Array of skill IDs job requires
- * @returns {number} Match score (0-100)
+ * @returns {number} Sum of matching skill points
  */
-const calculateMatchScore = (userSkills, jobSkills) => {
+const calculateMatchScore = (userSkillMap, jobSkills) => {
     if (!jobSkills || jobSkills.length === 0) return 0;
-    if (!userSkills || userSkills.length === 0) return 0;
+    if (!userSkillMap || Object.keys(userSkillMap).length === 0) return 0;
     
-    const matchingSkills = userSkills.filter(skill => jobSkills.includes(skill));
-    const matchPercentage = (matchingSkills.length / jobSkills.length) * 100;
+    let totalPoints = 0;
+    jobSkills.forEach(skillId => {
+        if (userSkillMap[skillId]) {
+            totalPoints += userSkillMap[skillId];
+        }
+    });
     
-    return Math.round(matchPercentage);
+    return totalPoints;
 };
 
 /**
@@ -34,17 +38,23 @@ exports.getRecommendedJobs = async (workerId, options = {}) => {
 
     const client = await pool.connect();
     try {
-        // 1. Get user's skills
+        // 1. Get user's skills with points
         const userSkillsRes = await client.query(`
-            SELECT skill_id FROM user_skills WHERE user_id = $1
+            SELECT skill_id, skill_points FROM user_skills WHERE user_id = $1
         `, [workerId]);
         
-        const userSkills = userSkillsRes.rows.map(r => r.skill_id);
+        const userSkillMap = {};
+        const userSkillIds = [];
+        userSkillsRes.rows.forEach(r => {
+            userSkillMap[r.skill_id] = r.skill_points;
+            userSkillIds.push(r.skill_id);
+        });
         
-        console.log(`👤 Worker ${workerId} has ${userSkills.length} skills:`, userSkills);
+        console.log(`👤 Worker ${workerId} has ${userSkillIds.length} skills with points tracking`);
         
         // Build dynamic WHERE conditions
-        let whereConditions = [`j.status IN ('OPEN', 'PENDING')`];
+        let whereConditions = [`j.status = 'OPEN'`];
+
         let queryParams = [workerId];
         let paramIndex = 2;
 
@@ -79,9 +89,6 @@ exports.getRecommendedJobs = async (workerId, options = {}) => {
         )`);
 
         const whereClause = whereConditions.join(' AND ');
-        
-        console.log('🔍 WHERE clause:', whereClause);
-        console.log('📊 Query params:', queryParams);
         
         // 2. Get all jobs with their skills
         const sqlQuery = `
@@ -119,25 +126,27 @@ exports.getRecommendedJobs = async (workerId, options = {}) => {
             ORDER BY j.created_at DESC
         `;
         
-        console.log('📝 Executing SQL query...');
         const jobsRes = await client.query(sqlQuery, queryParams);
-        
-        console.log(`📦 Retrieved ${jobsRes.rows.length} jobs from database`);
         
         // 3. Calculate match score for each job
         const jobsWithScore = jobsRes.rows.map(job => {
             const jobSkills = job.required_skills || [];
-            const matchScore = calculateMatchScore(userSkills, jobSkills);
+            const matchScore = calculateMatchScore(userSkillMap, jobSkills);
+            
+            // Calculate a simple match percentage for display
+            const matchingSkills = userSkillIds.filter(s => jobSkills.includes(s));
+            const matchPercentage = jobSkills.length > 0 ? Math.round((matchingSkills.length / jobSkills.length) * 100) : 0;
             
             return {
                 ...job,
-                match_score: matchScore,
-                matching_skills_count: userSkills.filter(s => jobSkills.includes(s)).length,
+                match_score: matchScore, // Now reflects skill points
+                match_percentage: matchPercentage,
+                matching_skills_count: matchingSkills.length,
                 total_required_skills: jobSkills.length
             };
         });
         
-        // 4. Filter by minimum match score and sort
+        // 4. Filter by minimum match score (if needed) and sort
         const filteredJobs = jobsWithScore
             .filter(job => job.match_score >= minMatchScore)
             .sort((a, b) => {
@@ -150,9 +159,8 @@ exports.getRecommendedJobs = async (workerId, options = {}) => {
             })
             .slice(0, limit);
         
-        console.log(`✅ Returning ${filteredJobs.length} jobs after filtering and scoring`);
-        
         return filteredJobs;
+
         
     } catch (error) {
         console.error('❌ Error in getRecommendedJobs service:');
@@ -184,11 +192,19 @@ exports.getRecommendedWorkers = async (jobId, limit = 10) => {
             return []; // No required skills, can't recommend
         }
         
-        // 2. Get all freelancers with their skills and reviews
+        // 2. Get all freelancers with their skills (including points) and reviews
         const workersRes = await client.query(`
-            SELECT DISTINCT u.id, u.email,
+            SELECT u.id, u.email,
                    up.full_name, up.bio, up.hourly_rate,
-                   ARRAY_AGG(DISTINCT us.skill_id) FILTER (WHERE us.skill_id IS NOT NULL) as user_skills,
+                   COALESCE(
+                       json_agg(
+                           jsonb_build_object(
+                               'id', us.skill_id,
+                               'points', us.skill_points
+                           )
+                       ) FILTER (WHERE us.skill_id IS NOT NULL),
+                       '[]'
+                   ) as user_skills_data,
                    COUNT(DISTINCT r.id) as total_reviews,
                    COALESCE(AVG(r.rating), 0) as average_rating
             FROM users u
@@ -203,15 +219,23 @@ exports.getRecommendedWorkers = async (jobId, limit = 10) => {
               )
             GROUP BY u.id, u.email, up.full_name, up.bio, up.hourly_rate
         `);
+
         
         // 3. Calculate match score for each worker
         const workersWithScore = workersRes.rows.map(worker => {
-            const userSkills = worker.user_skills || [];
-            const matchScore = calculateMatchScore(userSkills, jobSkills);
+            const userSkillsData = worker.user_skills_data || [];
             
-            // Bonus points for high ratings
+            // Convert to map for calculateMatchScore
+            const userSkillMap = {};
+            userSkillsData.forEach(s => {
+                userSkillMap[s.id] = s.points;
+            });
+
+            const skillMatchPoints = calculateMatchScore(userSkillMap, jobSkills);
+            
+            // Bonus points for high ratings (can adjust multiplier as needed)
             const ratingBonus = worker.total_reviews > 0 ? (worker.average_rating / 5) * 10 : 0;
-            const finalScore = Math.min(100, matchScore + ratingBonus);
+            const finalScore = skillMatchPoints + ratingBonus;
             
             return {
                 id: worker.id,
@@ -220,8 +244,8 @@ exports.getRecommendedWorkers = async (jobId, limit = 10) => {
                 bio: worker.bio,
                 hourly_rate: worker.hourly_rate,
                 match_score: Math.round(finalScore),
-                skill_match_score: matchScore,
-                matching_skills_count: userSkills.filter(s => jobSkills.includes(s)).length,
+                skill_match_points: skillMatchPoints,
+                matching_skills_count: userSkillsData.filter(s => jobSkills.includes(s.id)).length,
                 total_required_skills: jobSkills.length,
                 total_reviews: parseInt(worker.total_reviews),
                 average_rating: parseFloat(worker.average_rating).toFixed(2)
@@ -230,11 +254,12 @@ exports.getRecommendedWorkers = async (jobId, limit = 10) => {
         
         // 4. Sort by match score (highest first) and limit
         const sortedWorkers = workersWithScore
-            .filter(worker => worker.skill_match_score > 0) // Only workers with matching skills
+            .filter(worker => worker.skill_match_points > 0) // Only workers with matching skills
             .sort((a, b) => b.match_score - a.match_score)
             .slice(0, limit);
         
         return sortedWorkers;
+
         
     } finally {
         client.release();

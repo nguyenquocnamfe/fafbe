@@ -24,11 +24,14 @@ exports.createProposal = async ({ jobId, workerId, coverLetter, proposedPrice })
     const moderationStatus = moderationService.getModerationStatus(moderationResult.approved);
 
     // 3. Create with moderation
-    const { rows } = await client.query(`
-      INSERT INTO proposals (job_id, worker_id, cover_letter, proposed_price, status, moderation_status, moderation_result, created_at)
-      VALUES ($1, $2, $3, $4, 'PENDING', $5, $6, NOW())
-      RETURNING *
-    `, [jobId, workerId, coverLetter, proposedPrice, moderationStatus, JSON.stringify(moderationResult)]);
+    const { rows } = await client.query(sql.create, [
+      jobId, 
+      workerId, 
+      coverLetter, 
+      proposedPrice, 
+      moderationStatus, 
+      JSON.stringify(moderationResult)
+    ]);
     
     return rows[0];
 
@@ -73,62 +76,51 @@ exports.acceptProposal = async (proposalId, clientId) => {
         throw new Error("WORKER_HAS_ACTIVE_JOB");
     }
 
+    // 2.2 ENSURE WORKER PROFILE EXISTS (to prevent JOIN errors later)
+    const workerProfileRes = await client.query('SELECT user_id FROM user_profiles WHERE user_id = $1', [proposal.worker_id]);
+    if (workerProfileRes.rows.length === 0) {
+        // Get email/name from users table to use as initial full_name
+        const userRes = await client.query('SELECT email FROM users WHERE id = $1', [proposal.worker_id]);
+        const userName = userRes.rows[0]?.email?.split('@')[0] || 'Worker';
+        await client.query('INSERT INTO user_profiles (user_id, full_name, created_at) VALUES ($1, $2, NOW())', [proposal.worker_id, userName]);
+        console.log(`[ProposalService] Created default profile for worker ${proposal.worker_id} (${userName})`);
+    }
+
     // 3. Update Proposal Status
     const updateRes = await client.query(sql.updateStatus, [proposalId, 'ACCEPTED']);
     const updatedProposal = updateRes.rows[0];
 
     // 4. Update Contract (Assign Worker & Active)
-    // Find contract for this job (assuming 1 job - 1 contract mostly)
-    // The contracts table has job_id.
+    // Find the DRAFT contract for this job and assign worker
     const contractRes = await client.query(`
         UPDATE contracts 
-        SET worker_id = $1, status = 'ACTIVE' 
+        SET worker_id = $1, status = 'ACTIVE',
+            signature_worker = NULL, signature_client = NULL, signed_at = NULL,
+            updated_at = NOW()
         WHERE job_id = $2 AND status = 'DRAFT'
         RETURNING *
     `, [proposal.worker_id, proposal.job_id]);
     
-    // Note: If contract was NOT draft (e.g. already assigned), this might fail or do nothing.
-    // We should decide if we allow re-assigning? Assuming NO.
-    
-    // Also, we might want to reject other proposals? Optional.
-    
     const contract = contractRes.rows[0];
     if (!contract) throw new Error("CONTRACT_NOT_FOUND");
     
-    // 5. LOCK FUNDS (Move from balance to locked)
-    const totalAmount = Number(contract.total_amount);
-    
-    // Check if client has enough balance
-    const walletRes = await client.query('SELECT * FROM wallets WHERE user_id = $1', [clientId]);
-    const wallet = walletRes.rows[0];
-    
-    if (!wallet || wallet.balance_points < totalAmount) {
-        throw new Error("INSUFFICIENT_BALANCE");
-    }
-    
-    // Lock the funds
-    await client.query(`
-        UPDATE wallets 
-        SET balance_points = balance_points - $1, 
-            locked_points = locked_points + $1,
-            updated_at = NOW()
-        WHERE user_id = $2
-    `, [totalAmount, clientId]);
-    
-    // Record transaction
-    await client.query(`
-        INSERT INTO transactions (wallet_id, type, amount, status, reference_type, reference_id, created_at)
-        VALUES ($1, 'LOCK', $2, 'SUCCESS', 'CONTRACT', $3, NOW())
-    `, [wallet.id, totalAmount, contract.id]);
+    // 5. FUNDS HANDLING: Funds are already locked in wallets.locked_points 
+    // when the job was created in job.service.js. 
+    // No further lock/deduction needed here.
+
 
     // 6. Auto-Cleanup: Delete other pending proposals by this worker (Exclusive Work Policy)
     await client.query(`
         DELETE FROM proposals 
         WHERE worker_id = $1 AND status = 'PENDING' AND id != $2
     `, [proposal.worker_id, proposal.id]);
+
+    // 7. Update Job Status to IN_PROGRESS
+    await client.query("UPDATE jobs SET status = 'IN_PROGRESS', updated_at = NOW() WHERE id = $1", [proposal.job_id]);
     
     await client.query("COMMIT");
     return { proposal: updatedProposal, contract, job };
+
 
   } catch (e) {
     await client.query("ROLLBACK");

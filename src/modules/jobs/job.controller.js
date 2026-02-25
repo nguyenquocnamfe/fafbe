@@ -253,14 +253,45 @@ async function getJob(req, res) {
    GET /api/jobs
 ========================= */
 async function getListJobs(req, res) {
+  // Public job board only shows OPEN jobs
   const jobs = await listJobs({
-    status: req.query.status,
+    status: 'OPEN',
     categoryId: req.query.categoryId,
     clientId: req.query.clientId,
   });
 
   return res.json({ data: jobs });
 }
+
+
+async function getMyJobs(req, res) {
+  try {
+    const user = req.user;
+    const { status, categoryId, page, limit } = req.query;
+
+    const filter = {
+      status: status || 'ALL', // History usually shows everything
+      categoryId,
+      page: Number(page) || 1,
+      limit: Number(limit) || 10
+    };
+
+    if (user.role === 'employer') {
+      filter.clientId = user.id;
+    } else if (user.role === 'worker') {
+      filter.workerId = user.id;
+    } else {
+      return res.status(403).json({ message: "Invalid role for job history" });
+    }
+
+    const jobs = await listJobs(filter);
+    return res.json({ data: jobs });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
 
 
 /* =========================
@@ -280,7 +311,74 @@ async function updateJobHandler(req, res) {
 /* =========================
    DELETE /api/jobs/:id
 ========================= */
+async function getAdminPendingJobs(req, res) {
+  try {
+    if (req.user.role !== 'manager' && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ message: "Unauthorized. Manager/Admin only." });
+    }
+
+    const { page, limit } = req.query;
+    const jobs = await listPendingJobs({ 
+      page: Number(page) || 1, 
+      limit: Number(limit) || 10 
+    });
+
+    return res.json({ data: jobs });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+async function reviewJobHandler(req, res) {
+  try {
+    if (req.user.role !== 'manager' && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ message: "Unauthorized. Manager/Admin only." });
+    }
+
+    const jobId = Number(req.params.id);
+    const { status, adminComment } = req.body;
+
+    const job = await reviewJob(jobId, { 
+      status, 
+      adminComment, 
+      adminId: req.user.id 
+    });
+
+    // Notify Client
+    try {
+        const notificationService = require('../notifications/notification.service');
+        const io = req.app.get('io');
+        await notificationService.createNotification({
+            userId: job.client_id,
+            type: status === 'OPEN' ? 'JOB_APPROVED' : 'JOB_REJECTED',
+            title: status === 'OPEN' ? 'Job Approved' : 'Job Rejected',
+            message: status === 'OPEN' 
+                ? `Your job "${job.title}" has been approved and is now public.` 
+                : `Your job "${job.title}" was rejected: ${adminComment || 'No comment provided.'}`,
+            data: { jobId: job.id },
+            io
+        });
+    } catch (notifyErr) {
+        console.error("Failed to notify client about job review:", notifyErr);
+    }
+
+    return res.json({
+      message: `Job ${status.toLowerCase()} successfully`,
+      data: job
+    });
+
+  } catch (error) {
+    console.error(error);
+    if (error.message === 'JOB_NOT_FOUND') return res.status(404).json({ message: "Job not found" });
+    if (error.message === 'JOB_NOT_PENDING') return res.status(400).json({ message: "Job is not in pending status" });
+    if (error.message === 'INVALID_STATUS') return res.status(400).json({ message: "Invalid status. Must be OPEN or REJECTED" });
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
 async function deleteJobHandler(req, res) {
+
   try {
     const success = await deleteJob(Number(req.params.id));
 
@@ -299,6 +397,11 @@ module.exports = {
   createJob,
   getJob,
   getListJobs,
+  getMyJobs,
   updateJobHandler,
   deleteJobHandler,
+  getAdminPendingJobs,
+  reviewJobHandler,
 };
+
+

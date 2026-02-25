@@ -40,17 +40,12 @@ exports.getDispute = async (disputeId, userId) => {
     const dispute = rows[0];
     if (!dispute) return null;
     
-    // Check permission (Client, Worker, Admin)
+    // Check permission (Client, Worker)
     const contractRes = await pool.query('SELECT * FROM contracts WHERE id = $1', [dispute.contract_id]);
     const contract = contractRes.rows[0];
     
-    // Check if user is admin? 
-    // We don't have user role here easily unless passed. 
-    // For now, allow participants. Controller checks admin.
     if (contract.client_id !== userId && contract.worker_id !== userId) {
-         // Return null or throw? Let controller handle if it's admin.
-         // If called by controller with admin logic, we might need a bypass.
-         // Let's assume controller checks permissions.
+         return null; // Not a participant
     }
     
     const msgRes = await pool.query(sql.getMessages, [disputeId]);
@@ -58,6 +53,21 @@ exports.getDispute = async (disputeId, userId) => {
     
     return dispute;
 };
+
+/**
+ * Get dispute details without participant check (for Managers/Admins)
+ */
+exports.getDisputeAdmin = async (disputeId) => {
+    const { rows } = await pool.query(sql.getById, [disputeId]);
+    const dispute = rows[0];
+    if (!dispute) return null;
+    
+    const msgRes = await pool.query(sql.getMessages, [disputeId]);
+    dispute.messages = msgRes.rows;
+    
+    return dispute;
+};
+
 
 exports.addMessage = async ({ disputeId, userId, message, attachments }) => {
      const { rows } = await pool.query(sql.addMessage, [disputeId, userId, message, attachments || []]);
@@ -91,54 +101,34 @@ exports.resolveDispute = async ({ disputeId, resolution, adminId, io }) => {
         if (resolution === 'CLIENT_WINS') {
             // REFUND Client
             if (pendingPoints > 0) {
-                await client.query(`
-                    UPDATE wallets SET balance_points = balance_points + $1, locked_points = locked_points - $1, updated_at = NOW()
-                    WHERE user_id = $2
-                `, [pendingPoints, contract.client_id]);
-                
-                await client.query(`
-                     INSERT INTO transactions (wallet_id, type, amount, status, reference_type, reference_id, created_at)
-                     SELECT id, 'REFUND', $1, 'SUCCESS', 'DISPUTE_RESOLUTION', $2, NOW()
-                     FROM wallets WHERE user_id = $3
-                `, [pendingPoints, disputeId, contract.client_id]);
+                const walletService = require("../wallets/wallet.service");
+                await walletService.refundLockedFunds(client, {
+                    userId: contract.client_id,
+                    amount: pendingPoints,
+                    referenceId: disputeId,
+                    referenceType: 'DISPUTE_RESOLUTION'
+                });
             }
+
             
             // Cancel Contract & Checkpoints
             await client.query("UPDATE contracts SET status = 'CANCELLED' WHERE id = $1", [contract.id]);
             await client.query("UPDATE checkpoints SET status = 'CANCELLED' WHERE contract_id = $1 AND status != 'APPROVED'", [contract.id]);
 
         } else if (resolution === 'WORKER_WINS') {
-            // RELEASE to Worker
+            // RELEASE to Worker with 5% System Fee
              if (pendingPoints > 0) {
-                // Decrease Client Locked
-                await client.query(`
-                    UPDATE wallets SET locked_points = locked_points - $1, updated_at = NOW()
-                    WHERE user_id = $2
-                `, [pendingPoints, contract.client_id]);
-                
-                // Increase Worker Balance
-                await client.query(`
-                    UPDATE wallets SET balance_points = balance_points + $1, updated_at = NOW()
-                    WHERE user_id = $2
-                `, [pendingPoints, contract.worker_id]);
-                
-                // Log Transaction
-                 await client.query(`
-                     INSERT INTO transactions (wallet_id, type, amount, status, reference_type, reference_id, created_at)
-                     SELECT id, 'RELEASE', $1, 'SUCCESS', 'DISPUTE_RESOLUTION', $2, NOW()
-                     FROM wallets WHERE user_id = $3
-                `, [pendingPoints, disputeId, contract.client_id]); // Logged under client wallet as source? Or Worker? Usually system logs transfer.
-                // Better: Log RELEASE from Client perspective (deduction) or Worker?
-                // Our system logs movements via wallet_id.
-                // Let's log 'DEPOSIT' for Worker?
-                // Or 'RELEASE' from Escrow.
-                // Let's log for Worker as DEPOSIT/RELEASE.
-                 await client.query(`
-                     INSERT INTO transactions (wallet_id, type, amount, status, reference_type, reference_id, created_at)
-                     SELECT id, 'RELEASE', $1, 'SUCCESS', 'DISPUTE_RESOLUTION', $2, NOW()
-                     FROM wallets WHERE user_id = $3
-                `, [pendingPoints, disputeId, contract.worker_id]);
+                const walletService = require("../wallets/wallet.service");
+                await walletService.releaseCheckpointFunds(client, {
+                    clientId: contract.client_id,
+                    workerId: contract.worker_id,
+                    amount: pendingPoints,
+                    referenceId: disputeId,
+                    referenceType: 'DISPUTE_RESOLUTION'
+                });
             }
+
+
             
             // Complete Contract & Approve Checkpoints
             await client.query("UPDATE contracts SET status = 'COMPLETED' WHERE id = $1", [contract.id]);

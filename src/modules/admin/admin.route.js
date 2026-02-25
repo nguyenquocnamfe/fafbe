@@ -77,4 +77,49 @@ router.put('/jobs/:id/approve', auth, isAdmin, controller.approveJob);
  */
 router.put('/jobs/:id/reject', auth, isAdmin, controller.rejectJob);
 
+/**
+ * @swagger
+ * /api/admin/stats:
+ *   get:
+ *     summary: Get dashboard statistics
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/stats', auth, isAdmin, controller.getDashboardStats);
+
+/**
+ * @swagger
+ * /api/admin/financials:
+ *   get:
+ *     summary: Get financial overview
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/financials', auth, isAdmin, controller.getFinancialOverview);
+
+/**
+ * @swagger
+ * /api/admin/users:
+ *   get:
+ *     summary: List all users with details
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/users', auth, isAdmin, controller.listAllUsers);
+
+/**
+ * @swagger
+ * /api/admin/users/{id}/role:
+ *   patch:
+ *     summary: Update user role (Promote to Manager)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch('/users/:id/role', auth, isAdmin, controller.updateUserRoleHandler);
+
 module.exports = router;
+

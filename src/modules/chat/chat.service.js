@@ -55,3 +55,15 @@ exports.getParticipants = async (conversationId) => {
     const { rows } = await pool.query('SELECT user_id FROM conversation_participants WHERE conversation_id = $1', [conversationId]);
     return rows;
 };
+
+exports.sendSystemMessage = async (conversationId, content, io) => {
+    const { rows } = await pool.query(
+        'INSERT INTO messages (conversation_id, sender_id, content, type) VALUES ($1, $2, $3, $4) RETURNING *',
+        [conversationId, null, content, 'SYSTEM']
+    );
+    const message = rows[0];
+    if (io) {
+        io.to(`conversation_${conversationId}`).emit('receive_message', message);
+    }
+    return message;
+};

@@ -12,11 +12,12 @@ module.exports = {
   `,
 
   getByUserId: `
-    SELECT s.id, s.name, s.slug
+    SELECT s.id, s.name, s.slug, us.skill_points
     FROM user_skills us
     JOIN skills s ON s.id = us.skill_id
     WHERE us.user_id = $1
       AND s.is_active = true
     ORDER BY s.name ASC
   `,
+
 };

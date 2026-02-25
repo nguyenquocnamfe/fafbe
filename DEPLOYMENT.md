@@ -39,6 +39,12 @@ Tài liệu này hướng dẫn cách đưa Backend lên server để người k
 *   Copy link web service (ví dụ: `https://faf-backend.onrender.com`) để dùng.
 *   **Swagger Docs**: Truy cập `https://faf-backend.onrender.com/api-docs`.
 
+> **Lưu ý về gói Free (Miễn phí):**
+> *   Render sẽ **"ngủ đông" (spin down)** server nếu không có ai truy cập trong 15 phút.
+> *   Lần truy cập đầu tiên sau đó sẽ mất khoảng **30-60 giây** để khởi động lại (Cold Start).
+> *   Điều này hoàn toàn bình thường với gói Free và phù hợp để test/demo.
+> *   Nếu muốn chạy 24/7 không ngủ, bạn cần nâng cấp gói Paid ($7/tháng) hoặc dùng VPS.
+
 ---
 
 ## Cách 2: Dùng VPS (Ubuntu, DigitalOcean/AWS) - Nâng cao

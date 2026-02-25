@@ -47,17 +47,36 @@ exports.signContract = async ({ contractId, userId }) => {
         } else {
             updateRes = await client.query(sql.signContractWorker, [contractId, signature]);
         }
-        
-        return updateRes.rows[0];
+
+        const updatedContract = updateRes.rows[0];
+
+        // If both parties have signed, activate the contract
+        if (updatedContract.signature_worker && updatedContract.signature_client) {
+            await client.query(
+                `UPDATE contracts SET status = 'ACTIVE', updated_at = NOW() WHERE id = $1`,
+                [contractId]
+            );
+            updatedContract.status = 'ACTIVE';
+        }
+
+        return updatedContract;
 
     } finally {
         client.release();
     }
 };
 
+
 exports.getContract = async (id) => {
     const { rows } = await pool.query(sql.getById, [id]);
-    return rows[0];
+    const contract = rows[0];
+    if (!contract) return null;
+    
+    // Include checkpoints
+    const checkpointsRes = await pool.query(sql.getCheckpointsByContract, [contract.id]);
+    contract.checkpoints = checkpointsRes.rows;
+    
+    return contract;
 };
 
 exports.getActiveContractByWorker = async (workerId) => {
@@ -103,161 +122,6 @@ exports.getContractsByUser = async (userId) => {
     }
 };
 
-exports.submitCheckpoint = async ({ checkpointId, workerId, submissionUrl, submissionNotes }) => {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // Get checkpoint and verify ownership
-        const cpRes = await client.query('SELECT * FROM checkpoints WHERE id = $1', [checkpointId]);
-        const checkpoint = cpRes.rows[0];
-        if (!checkpoint) throw new Error('CHECKPOINT_NOT_FOUND');
-
-        // Verify worker owns this checkpoint's contract
-        const contractRes = await client.query('SELECT * FROM contracts WHERE id = $1', [checkpoint.contract_id]);
-        const contract = contractRes.rows[0];
-        if (!contract) throw new Error('CONTRACT_NOT_FOUND');
-        if (contract.worker_id != workerId) throw new Error('UNAUTHORIZED');
-
-        // Check if already submitted
-        if (checkpoint.status === 'SUBMITTED' || checkpoint.status === 'APPROVED') {
-            throw new Error('CHECKPOINT_ALREADY_SUBMITTED');
-        }
-
-        // Update checkpoint to SUBMITTED
-        const updateRes = await client.query(
-            sql.submitCheckpoint,
-            [checkpointId, submissionUrl, submissionNotes]
-        );
-
-        await client.query('COMMIT');
-        return updateRes.rows[0];
-    } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-    } finally {
-        client.release();
-    }
-};
-
-exports.approveCheckpoint = async ({ checkpointId, clientId, reviewNotes }) => {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // Get checkpoint
-        const cpRes = await client.query('SELECT * FROM checkpoints WHERE id = $1', [checkpointId]);
-        const checkpoint = cpRes.rows[0];
-        if (!checkpoint) throw new Error('CHECKPOINT_NOT_FOUND');
-
-        // Verify client owns this contract
-        const contractRes = await client.query('SELECT * FROM contracts WHERE id = $1', [checkpoint.contract_id]);
-        const contract = contractRes.rows[0];
-        if (!contract) throw new Error('CONTRACT_NOT_FOUND');
-        if (contract.client_id != clientId) throw new Error('UNAUTHORIZED');
-
-        // Check if checkpoint is submitted
-        if (checkpoint.status !== 'SUBMITTED') {
-            throw new Error('CHECKPOINT_NOT_SUBMITTED');
-        }
-
-        // Approve checkpoint and release funds
-        const updateRes = await client.query(
-            sql.approveCheckpoint,
-            [checkpointId, reviewNotes]
-        );
-
-        // Release locked funds to worker
-        await client.query(
-            `UPDATE wallets SET balance_points = balance_points + $1, locked_points = locked_points - $1 WHERE user_id = $2`,
-            [checkpoint.amount, contract.worker_id]
-        );
-
-        // Check if all checkpoints are approved -> mark contract as COMPLETED
-        const allCheckpointsRes = await client.query(
-            'SELECT * FROM checkpoints WHERE contract_id = $1',
-            [checkpoint.contract_id]
-        );
-        const allApproved = allCheckpointsRes.rows.every(cp => cp.id == checkpointId || cp.status === 'APPROVED');
-        
-        if (allApproved) {
-            await client.query(
-                'UPDATE contracts SET status = $1, updated_at = NOW() WHERE id = $2',
-                ['COMPLETED', checkpoint.contract_id]
-            );
-        }
-
-        await client.query('COMMIT');
-        return updateRes.rows[0];
-    } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-    } finally {
-        client.release();
-    }
-};
-
-exports.rejectCheckpoint = async ({ checkpointId, clientId, reviewNotes, reason }) => {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // Get checkpoint
-        const cpRes = await client.query('SELECT * FROM checkpoints WHERE id = $1', [checkpointId]);
-        const checkpoint = cpRes.rows[0];
-        if (!checkpoint) throw new Error('CHECKPOINT_NOT_FOUND');
-
-        // Verify client owns this contract
-        const contractRes = await client.query('SELECT * FROM contracts WHERE id = $1', [checkpoint.contract_id]);
-        const contract = contractRes.rows[0];
-        if (!contract) throw new Error('CONTRACT_NOT_FOUND');
-        if (contract.client_id != clientId) throw new Error('UNAUTHORIZED');
-
-        // Check if checkpoint is submitted
-        if (checkpoint.status !== 'SUBMITTED') {
-            throw new Error('CHECKPOINT_NOT_SUBMITTED');
-        }
-
-        // Reject checkpoint (worker needs to resubmit)
-        const updateRes = await client.query(
-            sql.rejectCheckpoint,
-            [checkpointId, reviewNotes + (reason ? ` | Reason: ${reason}` : '')]
-        );
-
-        await client.query('COMMIT');
-        return updateRes.rows[0];
-    } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-    } finally {
-        client.release();
-    }
-};
-
-exports.requestSettlement = async ({ contractId, workerId }) => {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        
-        const contractRes = await client.query('SELECT * FROM contracts WHERE id = $1', [contractId]);
-        const contract = contractRes.rows[0];
-        if (!contract) throw new Error('CONTRACT_NOT_FOUND');
-        if (contract.worker_id != workerId) throw new Error('UNAUTHORIZED');
-        
-        if (contract.status !== 'ACTIVE') throw new Error('CONTRACT_NOT_ACTIVE');
-        
-        const updateRes = await client.query(sql.requestSettlement, [contractId]);
-        
-        await client.query('COMMIT');
-        return updateRes.rows[0];
-    } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-    } finally {
-        client.release();
-    }
-};
-
 exports.finalizeSettlement = async ({ contractId, clientId }) => {
     const client = await pool.connect();
     try {
@@ -283,10 +147,13 @@ exports.finalizeSettlement = async ({ contractId, clientId }) => {
 
         // 5. Refund remaining amount to Client
         if (remainingAmount > 0) {
-            await client.query(
-                `UPDATE wallets SET balance_points = balance_points + $1 WHERE user_id = $2`,
-                [remainingAmount, clientId]
-            );
+            const walletService = require("../wallets/wallet.service");
+            await walletService.refundLockedFunds(client, {
+                userId: clientId,
+                amount: remainingAmount,
+                referenceId: contractId,
+                referenceType: 'CONTRACT_SETTLEMENT'
+            });
         }
         
         // 6. Mark contract as COMPLETED
@@ -301,9 +168,8 @@ exports.finalizeSettlement = async ({ contractId, clientId }) => {
         client.release();
     }
 };
-// ... existing code ...
 
-exports.terminateContract = async ({ contractId, clientId }) => {
+exports.terminateContract = async ({ contractId, userId }) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -312,7 +178,12 @@ exports.terminateContract = async ({ contractId, clientId }) => {
         const contractRes = await client.query('SELECT * FROM contracts WHERE id = $1', [contractId]);
         const contract = contractRes.rows[0];
         if (!contract) throw new Error('CONTRACT_NOT_FOUND');
-        if (contract.client_id != clientId) throw new Error('UNAUTHORIZED');
+        const clientId = contract.client_id;
+        
+        // Allow either client or worker to terminate
+        if (contract.client_id != userId && contract.worker_id != userId) {
+            throw new Error('UNAUTHORIZED');
+        }
 
         // 2. Fetch checkpoints
         const checkpointsRes = await client.query('SELECT * FROM checkpoints WHERE contract_id = $1', [contractId]);
@@ -322,32 +193,34 @@ exports.terminateContract = async ({ contractId, clientId }) => {
         await client.query("UPDATE contracts SET status = 'CANCELLED', updated_at = NOW() WHERE id = $1", [contractId]);
         await client.query("UPDATE checkpoints SET status = 'CANCELLED' WHERE contract_id = $1 AND status = 'PENDING'", [contractId]);
 
-        // 4. Calculate amount to refund (all PENDING or CANCELLED checkpoints)
-        // We only refund what was locked and NOT released.
-        // Approved/Released checkpoints are already paid.
-        // So we refund pending ones.
+        // 4. Calculate amount to refund (all PENDING checkpoints)
         const pendingCheckpoints = checkpoints.filter(cp => cp.status === 'PENDING');
         const refundAmount = pendingCheckpoints.reduce((sum, cp) => sum + Number(cp.amount), 0);
 
-        // 5. Refund remaining amount to Client (Unlock: Locked -> Balance)
+        // 5. Refund remaining amount to Client
         if (refundAmount > 0) {
-            await client.query(
-                `UPDATE wallets SET balance_points = balance_points + $1, locked_points = locked_points - $1, updated_at = NOW() WHERE user_id = $2`,
-                [refundAmount, clientId]
-            );
-            
-            // Record Refund Transaction
-            await client.query(`
-                INSERT INTO transactions (wallet_id, type, amount, status, reference_type, reference_id, created_at)
-                SELECT id, 'REFUND', $1, 'SUCCESS', 'CONTRACT_TERMINATION', $2, NOW()
-                FROM wallets WHERE user_id = $3
-            `, [refundAmount, contractId, clientId]);
+            const walletService = require("../wallets/wallet.service");
+            await walletService.refundLockedFunds(client, {
+                userId: clientId,
+                amount: refundAmount,
+                referenceId: contractId,
+                referenceType: 'CONTRACT_TERMINATION'
+            });
         }
 
         // 6. Job Re-opening: Update Job Status to OPEN
         await client.query("UPDATE jobs SET status = 'OPEN', updated_at = NOW() WHERE id = $1", [contract.job_id]);
 
-        // 7. Create New DRAFT Contract for Remaining Work
+        // 7. Reset worker's ACCEPTED proposal back to PENDING (so worker is free again)
+        if (contract.worker_id) {
+            await client.query(`
+                UPDATE proposals
+                SET status = 'PENDING', updated_at = NOW()
+                WHERE job_id = $1 AND worker_id = $2 AND status = 'ACCEPTED'
+            `, [contract.job_id, contract.worker_id]);
+        }
+
+        // 8. Create New DRAFT Contract for Remaining Work
         if (pendingCheckpoints.length > 0) {
             // Create Contract
              const newContractRes = await client.query(`
@@ -381,3 +254,4 @@ exports.terminateContract = async ({ contractId, clientId }) => {
         client.release();
     }
 };
+

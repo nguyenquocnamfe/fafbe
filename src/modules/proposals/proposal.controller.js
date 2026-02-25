@@ -1,6 +1,7 @@
 const s = require("./proposal.service");
 const { getJobById } = require("../jobs/job.service");
 const notificationService = require('../notifications/notification.service');
+const chatService = require('../chat/chat.service');
 
 exports.create = async (req, res) => {
   try {
@@ -38,6 +39,7 @@ exports.create = async (req, res) => {
     if (error.message === 'JOB_NOT_FOUND') return res.status(404).json({ message: "Job not found" });
     if (error.message === 'JOB_NOT_OPEN') return res.status(400).json({ message: "Job is not open for proposals" });
     if (error.message === 'ALREADY_APPLIED') return res.status(400).json({ message: "You have already applied to this job" });
+    if (error.message === 'WORKER_BUSY_CANNOT_APPLY') return res.status(400).json({ message: "You cannot apply while you have an active job contract" });
 
     console.error(error);
     return res.status(500).json({ message: "Internal server error" });
@@ -87,6 +89,14 @@ exports.accept = async (req, res) => {
             io
         });
         
+        // Send System Message to Chat
+        try {
+            const conv = await chatService.getOrCreateConversation(req.user.id, result.proposal.worker_id);
+            await chatService.sendSystemMessage(conv.id, `🎉 [Hệ thống] Chủ dự án đã chấp nhận đề xuất của bạn cho job "${result.job.title}". Hợp đồng #${result.contract.id} đã được tạo!`, io);
+        } catch (chatErr) {
+            console.error("Chat system message error:", chatErr);
+        }
+
         return res.json({ message: "Proposal accepted", data: result });
     } catch (e) {
         console.error(e);

@@ -97,7 +97,7 @@ async function runTest() {
         console.log(`   Worker Wallet: Balance=${workerWallet.rows[0].balance_points}`);
         
         if (Number(clientWallet.rows[0].locked_points) !== 0) throw new Error("Client locked points should be 0");
-        if (Number(workerWallet.rows[0].balance_points) !== 2000) throw new Error("Worker should have received 2000");
+        if (Number(workerWallet.rows[0].balance_points) !== 1900) throw new Error("Worker should have received 1900 (2000 - 5% fee)");
         
         console.log("✓ WORKER_WINS Verification Passed!");
         

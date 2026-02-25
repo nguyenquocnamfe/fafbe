@@ -22,14 +22,12 @@ exports.submitWork = async ({ checkpointId, workerId, submissionData }) => {
         if (contract.worker_id !== workerId) throw new Error("UNAUTHORIZED");
         if (contract.status !== 'ACTIVE') throw new Error("CONTRACT_NOT_ACTIVE");
 
-        // 2. Insert Submission
-        const { rows } = await client.query(sql.submit, [checkpointId, workerId, submissionData]);
+        // 2. Update Checkpoint with Submission
+        const { rows } = await client.query(sql.submit, [checkpointId, submissionData.submission_url, submissionData.submission_notes || '']);
         
-        // 3. Update Checkpoint Status
-        await client.query(sql.updateStatus, [checkpointId, 'SUBMITTED']);
-
         return rows[0];
     } finally {
+
         client.release();
     }
 };
@@ -53,44 +51,42 @@ exports.approveWork = async (checkpointId, clientId) => {
 
         if (job.client_id !== clientId) throw new Error("UNAUTHORIZED");
 
-        // 3. RELEASE FUND LOGIC
-        // Assumption: Money was locked in Client's wallet 'locked_points' when Contract started (or Job posted).
-        // Let's assume money is in Client's locked_points.
-        // Move: Client(locked) -> Worker(balance)
-        
-        const amount = Number(cp.amount);
-        const workerId = contract.worker_id;
+        // 3. RELEASE FUND LOGIC with 5% System Fee
+        const walletService = require("../wallets/wallet.service");
+        await walletService.releaseCheckpointFunds(client, {
+            clientId,
+            workerId: contract.worker_id,
+            amount: Number(cp.amount),
+            referenceId: checkpointId,
+            referenceType: 'CHECKPOINT'
+        });
 
-        // Decrease Client Locked
-        await client.query(`
-            UPDATE wallets SET locked_points = locked_points - $1, updated_at = NOW()
-            WHERE user_id = $2
-        `, [amount, clientId]);
 
-        // Increase Worker Balance
-        await client.query(`
-            UPDATE wallets SET balance_points = balance_points + $1, updated_at = NOW()
-            WHERE user_id = $2
-        `, [amount, workerId]);
 
-        // Record Transaction (Release)
-        const clientWallet = await getWallet(client, clientId);
-        await client.query(`
-            INSERT INTO transactions (wallet_id, type, amount, status, reference_type, reference_id)
-            VALUES ($1, 'RELEASE', $2, 'SUCCESS', 'CHECKPOINT', $3)
-        `, [clientWallet.id, amount, checkpointId]);
+
 
         // 4. Update Checkpoint Status
         await client.query(sql.updateStatus, [checkpointId, 'APPROVED']);
         
-        // 5. Update Submission Status (Assuming last submission is the valid one? Or we update all pending?)
-        // Let's iterate submissions for this checkpoint? 
-        // For simplicity, let's just mark checkpoint as APPROVED. 
-        // But better to update specific submission? 
-        // We will just update Checkpoint status for now as main indicator.
+        // 5. Check if all checkpoints in this contract are now APPROVED
+        const allCpsRes = await client.query('SELECT status FROM checkpoints WHERE contract_id = $1', [contract.id]);
+        const allApproved = allCpsRes.rows.every(r => r.status === 'APPROVED');
+
+        if (allApproved) {
+            await client.query(`UPDATE contracts SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`, [contract.id]);
+            await client.query(`UPDATE jobs SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`, [contract.job_id]);
+        }
 
         await client.query("COMMIT");
-        return { message: "Work approved and funds released" };
+        return { 
+            message: "Work approved and funds released",
+            contractCompleted: allApproved,
+            contractId: contract.id,
+            clientId: contract.client_id,
+            workerId: contract.worker_id,
+            jobTitle: job.title
+        };
+
 
     } catch (e) {
         await client.query("ROLLBACK");

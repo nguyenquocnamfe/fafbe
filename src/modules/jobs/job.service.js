@@ -37,30 +37,15 @@ async function createJobWithContractAndCheckpoints({
   try {
     await client.query("BEGIN");
 
-    // 0️⃣ Lock wallet
-    const walletRes = await client.query(
-      `SELECT id, balance_points, locked_points
-       FROM wallets
-       WHERE user_id = $1
-       FOR UPDATE`,
-      [clientId],
-    );
+    // 1️⃣ Lock budget
+    const walletService = require("../wallets/wallet.service");
+    await walletService.lockBudget(client, {
+       userId: clientId,
+       amount: budget,
+       referenceId: 0, // We will update this after job is created? Or use a placeholder.
+       referenceType: 'JOB_CREATION'
+    });
 
-    const wallet = walletRes.rows[0];
-    const available =
-      Number(wallet.balance_points) - Number(wallet.locked_points);
-
-    if (available < budget) {
-      throw new Error("NOT_ENOUGH_POINTS");
-    }
-
-    // 1️⃣ Trừ điểm
-    await client.query(
-      `UPDATE wallets
-       SET balance_points = balance_points - $1
-       WHERE id = $2`,
-      [budget, wallet.id],
-    );
 
     // 1.5 Moderate job content
     const moderationService = require('../../services/moderation.service');
@@ -142,11 +127,12 @@ async function createJobWithContractAndCheckpoints({
   }
 }
 
-async function listJobs({ page = 1, limit = 10, categoryId, clientId }) {
+async function listJobs({ page = 1, limit = 10, categoryId, clientId, status, workerId }) {
   const offset = (page - 1) * limit;
 
   const params = [];
   const conditions = [];
+  let joinClause = "";
 
   if (categoryId) {
     params.push(categoryId);
@@ -158,6 +144,19 @@ async function listJobs({ page = 1, limit = 10, categoryId, clientId }) {
     conditions.push(`j.client_id = $${params.length}`);
   }
 
+  if (workerId) {
+    params.push(workerId);
+    joinClause = "JOIN contracts ct ON ct.job_id = j.id";
+    conditions.push(`ct.worker_id = $${params.length}`);
+  }
+
+  // Default to OPEN status if not specified, support ALL to skip filter
+  if (status !== 'ALL') {
+    const jobStatus = status || 'OPEN';
+    params.push(jobStatus);
+    conditions.push(`j.status = $${params.length}`);
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : "";
 
   const { rows } = await pool.query(
@@ -167,6 +166,7 @@ async function listJobs({ page = 1, limit = 10, categoryId, clientId }) {
            (SELECT COUNT(*)::int FROM proposals p WHERE p.job_id = j.id) AS proposal_count
     FROM jobs j
     JOIN job_categories c ON c.id = j.category_id
+    ${joinClause}
     ${whereClause}
     ORDER BY j.created_at DESC
     LIMIT $${params.length + 1}
@@ -177,6 +177,7 @@ async function listJobs({ page = 1, limit = 10, categoryId, clientId }) {
 
   return rows;
 }
+
 
 /**
  * GET JOB DETAIL
@@ -290,10 +291,117 @@ async function deleteJob(jobId) {
   return rowCount > 0;
 }
 
+/**
+ * LIST PENDING JOBS (for Manager/Admin)
+ */
+async function listPendingJobs({ page = 1, limit = 10 }) {
+  const offset = (page - 1) * limit;
+  const { rows } = await pool.query(
+    `
+    SELECT j.*, c.name AS category_name, u.email as client_email
+    FROM jobs j
+    JOIN job_categories c ON c.id = j.category_id
+    JOIN users u ON u.id = j.client_id
+    WHERE j.status = 'PENDING'
+    ORDER BY j.created_at ASC
+    LIMIT $1 OFFSET $2
+    `,
+    [limit, offset]
+  );
+  return rows;
+}
+
+/**
+ * REVIEW JOB (Approve/Reject)
+ */
+async function reviewJob(jobId, { status, adminComment, adminId }) {
+  if (!['OPEN', 'REJECTED'].includes(status)) {
+    throw new Error("INVALID_STATUS");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Fetch job
+    const jobRes = await client.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
+    const job = jobRes.rows[0];
+    if (!job) throw new Error("JOB_NOT_FOUND");
+    if (job.status !== 'PENDING') throw new Error("JOB_NOT_PENDING");
+
+    // 2. Update job status
+    const { rows } = await client.query(
+      `
+      UPDATE jobs
+      SET status = $1,
+          admin_comment = $2,
+          updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+      `,
+      [status, adminComment || null, jobId]
+    );
+    const updatedJob = rows[0];
+
+    // 3. If OPEN, notify matching workers (Innovation Feature)
+    if (status === 'OPEN') {
+      try {
+        const matchingService = require('../matching/matching.service');
+        const notificationService = require('../notifications/notification.service');
+        // io is usually passed via app.get('io') in controller, but we might need a better way if service is decoupled.
+        // For now, we'll try to find it or just log. In FAF, we often pass it or use a global.
+        // Since reviewJob is called from controller, we can pass io or hope it handles it.
+        // I'll assume it's available or failing gracefully.
+        
+        const workers = await matchingService.getRecommendedWorkers(jobId, 10);
+        const io = global.io; // Assuming global.io is set during startup (common pattern)
+        
+        for (const worker of workers) {
+            await notificationService.createNotification({
+                userId: worker.id,
+                type: 'SKILL_MATCH_ALERT',
+                title: 'New Job Matching Your Skills!',
+                message: `The job "${updatedJob.title}" matches your top skills. Apply now!`,
+                data: { jobId: job.id },
+                io
+            });
+        }
+      } catch (e) {
+        console.error("Match Notification Failed:", e);
+      }
+    }
+
+    // 3.5 If REJECTED, refund funds to client
+    if (status === 'REJECTED') {
+
+      const budget = Number(job.budget);
+      const walletService = require("../wallets/wallet.service");
+      await walletService.refundLockedFunds(client, {
+         userId: job.client_id,
+         amount: budget,
+         referenceId: jobId,
+         referenceType: 'JOB_REJECTION'
+      });
+    }
+
+
+    await client.query('COMMIT');
+    return updatedJob;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   createJobWithContractAndCheckpoints,
   listJobs,
   getJobById,
   updateJob,
   deleteJob,
+  listPendingJobs,
+  reviewJob,
 };
+
